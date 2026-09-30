@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import type { Context } from 'grammy';
 import { handleMessage } from '../src/handlers/message.js';
 import { MediaDownloader, type MediaMetadata } from '../src/services/downloader.js';
-import { MediaError, getMediaErrorReply, type MediaErrorCode } from '../src/utils/mediaError.js';
+import {
+  MediaError,
+  MediaSizeLimitError,
+  getMediaErrorReply,
+  type MediaErrorCode,
+} from '../src/utils/mediaError.js';
 import { env } from '../src/config/env.js';
 import { logger } from '../src/utils/logger.js';
 
@@ -120,4 +125,9 @@ test('rate-limit failures keep a retry-later reply even when no media was return
     getMediaErrorReply(error),
     'This site is rate-limiting downloads. Please try again later.',
   );
+});
+
+test('size limits containing 429 are not mistaken for a site rate limit', () => {
+  const error = new MediaSizeLimitError(500 * 1024 * 1024, 429 * 1024 * 1024);
+  assert.equal(getMediaErrorReply(error), 'Media file (500.0MB) exceeds size limit (429MB)');
 });

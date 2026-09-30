@@ -16,7 +16,7 @@ import type { ChatAction } from '../utils/chatAction.js';
 import { normalizeUrl } from '../utils/urlNormalize.js';
 import { withTelegramFlood } from '../utils/telegramFlood.js';
 import { getCooldownRemainingMs } from '../utils/hostCooldown.js';
-import { getMediaErrorReply } from '../utils/mediaError.js';
+import { getMediaErrorReply, MediaSizeLimitError } from '../utils/mediaError.js';
 import { RequestProgress } from '../utils/requestProgress.js';
 
 const BYTES_PER_MB = 1024 * 1024;
@@ -540,9 +540,7 @@ async function buildMediaItems(filePaths: string[]): Promise<MediaItem[]> {
         const fileSizeMB = fileSizeBytes > 0 ? (fileSizeBytes / BYTES_PER_MB).toFixed(1) : '0';
 
         if (fileSizeBytes > env.MAX_FILE_SIZE) {
-          throw new Error(
-            `Media file (${fileSizeMB}MB) exceeds size limit (${Math.round(env.MAX_FILE_SIZE / BYTES_PER_MB)}MB)`,
-          );
+          throw new MediaSizeLimitError(fileSizeBytes, env.MAX_FILE_SIZE);
         }
 
         return {
@@ -569,9 +567,7 @@ async function buildMediaItems(filePaths: string[]): Promise<MediaItem[]> {
   // limit but collectively exhaust disk/bandwidth/Telegram upload budget.
   const totalBytes = fulfilled.reduce((sum, item) => sum + item.fileSizeBytes, 0);
   if (totalBytes > MAX_ALBUM_BYTES) {
-    throw new Error(
-      `Album total (${(totalBytes / BYTES_PER_MB).toFixed(0)}MB) exceeds limit (${Math.round(MAX_ALBUM_BYTES / BYTES_PER_MB)}MB)`,
-    );
+    throw new MediaSizeLimitError(totalBytes, MAX_ALBUM_BYTES, 'album');
   }
 
   return fulfilled;

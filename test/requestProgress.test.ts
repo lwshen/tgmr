@@ -1,6 +1,6 @@
 import { after, beforeEach, test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, rm, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { Api, Context } from 'grammy';
@@ -9,8 +9,10 @@ import type { MediaMetadata } from '../src/services/downloader.js';
 // Keep the full handler/probe path offline, without requiring ffmpeg or media downloads.
 const dir = await mkdtemp(join(tmpdir(), 'tgmr-progress-test-'));
 const previousTmpDir = process.env.TMP_DIR;
+const previousMaxFileSize = process.env.MAX_FILE_SIZE;
 const previousPath = process.env.PATH;
 process.env.TMP_DIR = dir;
+process.env.MAX_FILE_SIZE = String(50 * 1024 * 1024);
 const [{ handleMessage, stopCacheEvict }, { MediaDownloader }, { env }, { logger }] =
   await Promise.all([
     import('../src/handlers/message.js'),
@@ -20,14 +22,18 @@ const [{ handleMessage, stopCacheEvict }, { MediaDownloader }, { env }, { logger
   ]);
 if (previousTmpDir === undefined) delete process.env.TMP_DIR;
 else process.env.TMP_DIR = previousTmpDir;
+if (previousMaxFileSize === undefined) delete process.env.MAX_FILE_SIZE;
+else process.env.MAX_FILE_SIZE = previousMaxFileSize;
 await writeFile(
   join(dir, 'ffprobe'),
   `#!/usr/bin/env node
 const path = process.argv.at(-1);
+const size = require('node:fs').statSync(path).size;
 const stream = path.endsWith('.ogg')
   ? { codec_type: 'audio', codec_name: 'opus' }
   : { codec_type: 'video', codec_name: path.endsWith('.jpg') ? 'mjpeg' : 'h264', width: 320, height: 240 };
-process.stdout.write(JSON.stringify({ streams: [stream], format: { size: '1' } }));
+const format = path.includes('no-probe-size') ? {} : { size: String(size) };
+process.stdout.write(JSON.stringify({ streams: [stream], format }));
 `,
   { mode: 0o700 },
 );
@@ -135,7 +141,13 @@ function requestContext(
 function stubDownload(
   t: TestContext,
   events: string[],
-  options: { format?: MediaMetadata['format']; count?: number; gate?: Promise<void> } = {},
+  options: {
+    format?: MediaMetadata['format'];
+    count?: number;
+    gate?: Promise<void>;
+    sizeBytes?: number;
+    omitProbeSize?: boolean;
+  } = {},
 ) {
   const format = options.format ?? 'video';
   const info = t.mock.method(downloader, 'getMediaInfo', async (url: string) => {
@@ -147,9 +159,14 @@ function stubDownload(
     await options.gate;
     const extension = { video: 'mp4', image: 'jpg', audio: 'ogg' }[format];
     const filePaths = Array.from({ length: options.count ?? 1 }, () =>
-      join(dir, `${nextFile++}.${extension}`),
+      join(dir, `${nextFile++}${options.omitProbeSize ? '-no-probe-size' : ''}.${extension}`),
     );
-    await Promise.all(filePaths.map((path) => writeFile(path, 'x')));
+    await Promise.all(
+      filePaths.map(async (path) => {
+        await writeFile(path, 'x');
+        if (options.sizeBytes !== undefined) await truncate(path, options.sizeBytes);
+      }),
+    );
     return { success: true, filePaths, mediaInfo: { url, title: 'Test', format } };
   });
   return { info, download };
@@ -298,4 +315,45 @@ test('an empty download replaces the status with a failure and never starts send
   );
   assert.ok(!request.events.includes('Sending media...'));
   assert.ok(!request.events.includes('deleteMessage'));
+});
+
+for (const [name, options, expected] of [
+  [
+    'oversized-file',
+    { sizeBytes: Math.round(72.1 * 1024 * 1024) },
+    'Media file (72.1MB) exceeds size limit (50MB)',
+  ],
+  [
+    'oversized-file-without-probe-size',
+    { sizeBytes: Math.round(72.1 * 1024 * 1024), omitProbeSize: true },
+    'Media file (72.1MB) exceeds size limit (50MB)',
+  ],
+  [
+    'oversized-album',
+    { sizeBytes: 50 * 1024 * 1024, count: 11 },
+    'Album total (550.0MB) exceeds size limit (500MB)',
+  ],
+] as const) {
+  test(`${name} reports actual size and limit in Telegram and cleans up files`, async (t) => {
+    const request = requestContext(link(name));
+    const { download } = stubDownload(t, request.events, options);
+    await handleMessage(request.ctx);
+    assert.deepEqual([...request.statuses.values()], [expected]);
+    assert.equal(request.calls.filter((call) => call.method === 'sendMessage').length, 1);
+    assert.ok(!request.events.includes('Sending media...'));
+    assert.ok(!request.events.includes('deleteMessage'));
+    const result = await download.mock.calls[0].result;
+    assert.ok(result);
+    for (const path of result.filePaths) {
+      await assert.rejects(access(path), { code: 'ENOENT' });
+    }
+  });
+}
+
+test('a file exactly at the size limit is sent successfully', async (t) => {
+  const request = requestContext(link('file-at-size-limit'));
+  stubDownload(t, request.events, { sizeBytes: env.MAX_FILE_SIZE });
+  await handleMessage(request.ctx);
+  assert.ok(request.events.includes('sendVideo'));
+  assert.equal(request.statuses.size, 0);
 });

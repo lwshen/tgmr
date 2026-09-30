@@ -15,6 +15,17 @@ export class MediaError extends Error {
   }
 }
 
+/** Contains only size details that are safe to show in a Telegram reply. */
+export class MediaSizeLimitError extends Error {
+  constructor(sizeBytes: number, limitBytes: number, scope: 'file' | 'album' = 'file') {
+    const subject = scope === 'album' ? 'Album total' : 'Media file';
+    super(
+      `${subject} (${(sizeBytes / (1024 * 1024)).toFixed(1)}MB) exceeds size limit (${limitBytes / (1024 * 1024)}MB)`,
+    );
+    this.name = 'MediaSizeLimitError';
+  }
+}
+
 const USER_MESSAGES: Record<MediaErrorCode, string> = {
   deleted: 'This post was deleted by its author. Its media cannot be downloaded from this link.',
   unavailable: 'This post is unavailable. It may be private, restricted, or no longer accessible.',
@@ -24,6 +35,9 @@ const USER_MESSAGES: Record<MediaErrorCode, string> = {
 };
 
 export function getMediaErrorReply(error: unknown): string {
+  if (error instanceof MediaSizeLimitError) {
+    return error.message;
+  }
   if (isRateLimitError(error)) {
     return 'This site is rate-limiting downloads. Please try again later.';
   }
