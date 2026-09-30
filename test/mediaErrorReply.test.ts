@@ -17,9 +17,16 @@ function requestContext(url: string): { ctx: Context; replies: string[] } {
     message: { text: url, message_id: id },
     chat: { id, type: 'private' },
     from: { id },
-    api: { sendChatAction: async () => true },
+    api: {
+      sendChatAction: async () => true,
+      editMessageText: async (_chatId: number, messageId: number, text: string) => {
+        replies[messageId - 1] = text;
+        return true;
+      },
+    },
     reply: async (text: string) => {
       replies.push(text);
+      return { message_id: replies.length };
     },
   } as unknown as Context;
   return { ctx, replies };

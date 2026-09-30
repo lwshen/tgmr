@@ -17,6 +17,7 @@ import { normalizeUrl } from '../utils/urlNormalize.js';
 import { withTelegramFlood } from '../utils/telegramFlood.js';
 import { getCooldownRemainingMs } from '../utils/hostCooldown.js';
 import { getMediaErrorReply } from '../utils/mediaError.js';
+import { RequestProgress } from '../utils/requestProgress.js';
 
 const BYTES_PER_MB = 1024 * 1024;
 const MAX_MEDIA_GROUP_SIZE = 10;
@@ -164,7 +165,22 @@ async function getCachedDownload(url: string): Promise<CachedDownload | null> {
 // Tracks downloads currently in progress so concurrent duplicate-URL requests
 // share the single download instead of both writing to the same filename.
 // Extraction errors are shared with every waiting caller for a specific reply.
-const inFlightDownloads = new Map<string, Promise<CachedDownload | null>>();
+interface DownloadProgress {
+  text: string;
+  subscribers: Set<RequestProgress>;
+}
+
+interface InFlightDownload {
+  result: Promise<CachedDownload | null>;
+  progress: DownloadProgress;
+}
+
+const inFlightDownloads = new Map<string, InFlightDownload>();
+
+async function updateDownloadProgress(progress: DownloadProgress, text: string): Promise<void> {
+  progress.text = text;
+  await Promise.all([...progress.subscribers].map((subscriber) => subscriber.update(text)));
+}
 
 // Snapshot of files owned by live cache entries — the periodic cleanup sweep
 // skips these so it only reaps true orphans, decoupling it from the cache's own
@@ -282,62 +298,65 @@ async function processMediaRequest(
   logCtx: Record<string, unknown>,
   showInfo: boolean,
 ): Promise<void> {
-  // Check cache first — pure cache hits skip the action manager entirely.
-  const cached = await getCachedDownload(url);
-  if (cached) {
-    logger.info('Cache hit — re-sending', logCtx);
-    await sendResult(ctx, cached, url, messageId, showInfo);
-    return;
-  }
-
+  const progress = new RequestProgress(ctx, chatId, messageId, logCtx);
   const actionManager = new ChatActionManager(ctx, chatId);
+  let flight: InFlightDownload | undefined;
   try {
-    await actionManager.start('typing');
-
-    // If another request is already downloading this URL, wait for it.
-    // Otherwise re-check the cache (a concurrent request may have completed
-    // between our initial check and now) before starting a fresh download.
-    const key = normalizeUrl(url);
-    let promise = inFlightDownloads.get(key);
-    if (promise) {
-      logger.info('Awaiting in-flight download', logCtx);
+    await progress.update('Received.');
+    let result = await getCachedDownload(url);
+    if (result) {
+      logger.info('Cache hit — re-sending', logCtx);
     } else {
-      // Register the in-flight promise synchronously (no await between the get
-      // and the set) so two concurrent requests for the same URL can't both miss
-      // the map and start duplicate downloads to the same filename. The post-lock
-      // cache recheck and the download both run inside this promise; the download
-      // slot is acquired only around the actual download.
-      promise = (async (): Promise<CachedDownload | null> => {
-        const recheck = await getCachedDownload(url);
-        if (recheck) {
-          logger.info('Cache hit (post-lock) — re-sending', logCtx);
-          return recheck;
-        }
-        return runDownloadPipeline(url, actionManager, logCtx);
-      })().finally(() => inFlightDownloads.delete(key));
-      inFlightDownloads.set(key, promise);
+      await actionManager.start('typing');
+      const key = normalizeUrl(url);
+      flight = inFlightDownloads.get(key);
+      if (flight) {
+        logger.info('Awaiting in-flight download', logCtx);
+        flight.progress.subscribers.add(progress);
+        await progress.update(flight.progress.text);
+      } else {
+        const sharedProgress: DownloadProgress = {
+          text: 'Fetching media info...',
+          subscribers: new Set([progress]),
+        };
+        // No await between checking and registering: duplicate requests share
+        // one download, with each receiving updates on its own status reply.
+        const pending = (async (): Promise<CachedDownload | null> => {
+          const recheck = await getCachedDownload(url);
+          if (recheck) {
+            logger.info('Cache hit (post-lock) — re-sending', logCtx);
+            return recheck;
+          }
+          return runDownloadPipeline(url, actionManager, logCtx, sharedProgress);
+        })().finally(() => inFlightDownloads.delete(key));
+        flight = { result: pending, progress: sharedProgress };
+        inFlightDownloads.set(key, flight);
+      }
+
+      result = await flight.result;
+      flight.progress.subscribers.delete(progress);
     }
 
-    const result = await promise;
-
     if (!result) {
-      await ctx
-        .reply('Failed to process media. Please try a different URL.', {
-          reply_parameters: { message_id: messageId, allow_sending_without_reply: true },
-        })
-        .catch(() => {});
+      await progress.update('Failed to process media. Please try a different URL.', true);
       return;
     }
 
-    await sendResult(ctx, result, url, messageId, showInfo);
+    const sent = await sendResult(ctx, result, url, messageId, showInfo, progress);
+    if (sent === result.mediaItems.length) {
+      logger.info('Media sent successfully', { ...logCtx, items: sent });
+      await progress.remove();
+    } else {
+      await progress.update(
+        `Sent ${sent} of ${result.mediaItems.length} items; the rest failed — please retry.`,
+        true,
+      );
+    }
   } catch (error) {
     logger.error('Failed to process media request', { ...logCtx, error });
-    await ctx
-      .reply(getMediaErrorReply(error), {
-        reply_parameters: { message_id: messageId, allow_sending_without_reply: true },
-      })
-      .catch(() => {});
+    await progress.update(getMediaErrorReply(error), true);
   } finally {
+    flight?.progress.subscribers.delete(progress);
     actionManager.stop();
   }
 }
@@ -348,16 +367,26 @@ async function sendResult(
   url: string,
   messageId: number,
   showInfo: boolean,
-): Promise<void> {
+  progress: RequestProgress,
+): Promise<number> {
   // Pin the cache key while uploading so the evict timer can't delete the files
   // from under an in-progress send (e.g. a slow album read near TTL expiry).
   const key = normalizeUrl(url);
   markInUse(key);
   try {
+    await progress.update('Sending media...');
     if (result.mediaItems.length > 1) {
-      await sendMediaGroup(ctx, result.mediaItems, result.mediaInfo, url, messageId, showInfo);
+      return await sendMediaGroup(
+        ctx,
+        result.mediaItems,
+        result.mediaInfo,
+        url,
+        messageId,
+        showInfo,
+      );
     } else {
       await sendSingleMedia(ctx, result.mediaItems[0], result.mediaInfo, url, messageId, showInfo);
+      return 1;
     }
   } finally {
     unmarkInUse(key);
@@ -375,6 +404,7 @@ async function runDownloadPipeline(
   url: string,
   actionManager: ChatActionManager,
   logCtx: Record<string, unknown>,
+  progress: DownloadProgress,
 ): Promise<CachedDownload | null> {
   const downloader = MediaDownloader.getInstance();
   let filePaths: string[] = [];
@@ -382,20 +412,24 @@ async function runDownloadPipeline(
   let cached = false;
 
   try {
-    const mediaInfo = await fetchMediaInfo(downloader, url, actionManager, logCtx);
+    await updateDownloadProgress(progress, 'Fetching media info...');
+    const mediaInfo = await fetchMediaInfo(downloader, url, actionManager);
 
     // Hold a download slot only around the actual download — the metadata fetch
     // (above) and probe/thumbnail work (buildMediaItems, bounded separately by
     // probeSemaphore) run outside it so they don't throttle other requests' slots.
-    const result = await downloadSemaphore.run(() =>
-      downloadMedia(downloader, url, mediaInfo, actionManager, logCtx),
-    );
+    await updateDownloadProgress(progress, 'Waiting to download...');
+    const result = await downloadSemaphore.run(async () => {
+      await updateDownloadProgress(progress, `Downloading ${mediaInfo.format}...`);
+      return downloadMedia(downloader, url, mediaInfo, actionManager);
+    });
     if (!result.success || result.filePaths.length === 0 || !result.mediaInfo) {
       logger.error('Download failed', { ...logCtx, error: result.error });
       return null;
     }
 
     filePaths = result.filePaths;
+    await updateDownloadProgress(progress, 'Preparing media...');
     mediaItems = await buildMediaItems(filePaths);
 
     const key = normalizeUrl(url);
@@ -428,10 +462,8 @@ async function fetchMediaInfo(
   downloader: MediaDownloader,
   url: string,
   actionManager: ChatActionManager,
-  logCtx: Record<string, unknown>,
 ): Promise<MediaMetadata> {
   await actionManager.start('typing');
-  logger.info('Fetching media info...', logCtx);
   return withRetry(() => downloader.getMediaInfo(url), {
     maxAttempts: 3,
     initialDelay: 1000,
@@ -444,7 +476,6 @@ async function downloadMedia(
   url: string,
   mediaInfo: MediaMetadata,
   actionManager: ChatActionManager,
-  logCtx: Record<string, unknown>,
 ): ReturnType<MediaDownloader['download']> {
   const action: ChatAction =
     mediaInfo.format === 'audio'
@@ -454,7 +485,6 @@ async function downloadMedia(
         : 'upload_video';
   await actionManager.start(action);
 
-  logger.info(`Downloading ${mediaInfo.format}`, logCtx);
   return withRetry(
     () =>
       downloader.download(
@@ -556,7 +586,7 @@ async function sendMediaGroup(
   url: string,
   messageId: number,
   showInfo: boolean,
-): Promise<void> {
+): Promise<number> {
   let sent = 0;
   for (let i = 0; i < mediaItems.length; i += MAX_MEDIA_GROUP_SIZE) {
     const chunk = mediaItems.slice(i, i + MAX_MEDIA_GROUP_SIZE);
@@ -607,14 +637,10 @@ async function sendMediaGroup(
       if (sent === 0) throw error;
       // Some chunks already arrived → don't masquerade as a total failure.
       logger.warn('Partial album delivery', { sent, total: mediaItems.length, error });
-      await ctx
-        .reply(`Sent ${sent} of ${mediaItems.length} items; the rest failed — please retry.`, {
-          reply_parameters: { message_id: messageId, allow_sending_without_reply: true },
-        })
-        .catch(() => {});
-      return;
+      return sent;
     }
   }
+  return sent;
 }
 
 async function sendSingleMedia(

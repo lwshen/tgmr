@@ -104,6 +104,9 @@ Note: Keep your cookie files secure as they contain sensitive authentication dat
    - Image files for image content from supported platforms
    - Caption including title and technical details
 
+A reply to your link tracks progress and is deleted after successful delivery. Errors and partial-delivery notices remain visible.
+The same stages and successful delivery are logged with the chat and message IDs.
+
 ### Commands
 
 - `/start` - Introduction message
