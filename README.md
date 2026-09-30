@@ -15,7 +15,8 @@ A Telegram bot that automatically downloads and replies with media content when 
 - Sends videos with thumbnails and proper aspect ratio
 - Works in both private chats and groups
 - Processes messages concurrently, including multiple requests in the same chat
-- Includes detailed media information in captions (format, quality, size)
+- Captions include post text and a linked author name and username
+- Append `+info` to include media format, quality, and size
 - Efficient temporary file management
 - Rate limiting to prevent spam and abuse
 - Docker support for easy deployment
@@ -104,7 +105,12 @@ Note: Keep your cookie files secure as they contain sensitive authentication dat
    - A voice message for audio-only content
    - A video file for video content
    - Image files for image content from supported platforms
-   - Caption including title and technical details
+   - Caption containing the post text, followed by `🔗 Nickname (@username)` linked to the original post
+
+Post text keeps its line breaks. Long text is truncated to fit Telegram's caption limit while retaining the author link.
+For albums, the post text appears on the first batch; later batches retain the author link.
+When author information is unavailable, the link is labeled `Original post`.
+Append `+info` after the URL to also include technical details (format, quality, size).
 
 A reply to your link tracks progress and is deleted after successful delivery. Errors and partial-delivery notices remain visible.
 The same stages and successful delivery are logged with the chat and message IDs.

@@ -578,7 +578,7 @@ async function buildMediaItems(filePaths: string[]): Promise<MediaItem[]> {
 async function sendMediaGroup(
   ctx: Context,
   mediaItems: MediaItem[],
-  mediaInfo: { title: string },
+  mediaInfo: MediaMetadata,
   url: string,
   messageId: number,
   showInfo: boolean,
@@ -593,15 +593,14 @@ async function sendMediaGroup(
         await sendSingleMedia(
           ctx,
           chunk[0],
-          { title: mediaInfo.title, format: chunk[0].isVideo ? 'video' : 'image' },
+          { ...mediaInfo, format: chunk[0].isVideo ? 'video' : 'image' },
           url,
           messageId,
-          showInfo && i === 0,
+          showInfo,
+          i === 0,
         );
       } else {
-        const caption = showInfo
-          ? buildGroupCaption(mediaInfo.title, url, chunk, i === 0)
-          : undefined;
+        const caption = buildGroupCaption(mediaInfo, url, chunk, i === 0, showInfo);
         const mediaGroup = chunk.map((item, index) => {
           const captionOpts =
             index === 0 && caption ? { caption, parse_mode: 'MarkdownV2' as const } : {};
@@ -642,12 +641,13 @@ async function sendMediaGroup(
 async function sendSingleMedia(
   ctx: Context,
   item: MediaItem,
-  mediaInfo: { title: string; format: string },
+  mediaInfo: MediaMetadata,
   url: string,
   messageId: number,
   showInfo: boolean,
+  includeBody = true,
 ): Promise<void> {
-  const caption = showInfo ? buildSingleCaption(mediaInfo.title, url, item) : undefined;
+  const caption = buildSingleCaption(mediaInfo, url, item, showInfo, includeBody);
   const baseOpts = {
     reply_parameters: { message_id: messageId, allow_sending_without_reply: true },
     ...(caption && { caption, parse_mode: 'MarkdownV2' as const }),

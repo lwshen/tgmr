@@ -29,6 +29,9 @@ interface MediaType {
 export interface MediaMetadata {
   url: string;
   title: string;
+  description?: string;
+  authorName?: string;
+  authorUsername?: string;
   duration?: number;
   format: 'audio' | 'video' | 'image';
   mediaTypes?: MediaType[];
@@ -236,13 +239,34 @@ export class MediaDownloader {
       throw failure('No downloadable media found in gallery-dl output', 'no_media');
     }
 
-    postMetadata ??= mediaTypes[0];
-    const title =
+    postMetadata = { ...mediaTypes[0], ...postMetadata };
+    const description =
       asString(postMetadata.tweet_text) ||
       asString(postMetadata.description) ||
       asString(postMetadata.text) ||
       asString(postMetadata.content) ||
-      'No title';
+      asString(postMetadata.caption) ||
+      asString(postMetadata.title);
+    const author = isRecord(postMetadata.author)
+      ? postMetadata.author
+      : isRecord(postMetadata.user)
+        ? postMetadata.user
+        : {};
+    // Twitter's `nick` is the display name; `name` is the account handle.
+    const isTwitter = findSiteByDomain(this.getHostname(url) ?? '')?.alias === 'twitter';
+    const authorName =
+      asString(postMetadata.fullname) ||
+      asString(author.nick) ||
+      asString(author.full_name) ||
+      asString(author.displayName) ||
+      (!isTwitter ? asString(author.name) : '') ||
+      asString(postMetadata.author);
+    const authorUsername =
+      asString(postMetadata.username) ||
+      (isTwitter ? asString(author.name) : '') ||
+      asString(author.username) ||
+      asString(author.handle) ||
+      asString(author.account);
 
     const imageCount = mediaTypes.filter(
       (m) =>
@@ -254,7 +278,10 @@ export class MediaDownloader {
 
     return {
       url,
-      title,
+      title: description || asString(postMetadata.title) || 'No title',
+      description,
+      authorName: authorName || undefined,
+      authorUsername: authorUsername || undefined,
       format: videoCount > 0 ? 'video' : 'image',
       mediaTypes,
       contentCounts: { images: imageCount, videos: videoCount },
@@ -266,6 +293,10 @@ export class MediaDownloader {
     const printTemplate = [
       '{',
       '"title": %(title)j,',
+      '"description": %(description)j,',
+      '"uploader": %(uploader)j,',
+      '"uploader_id": %(uploader_id)j,',
+      '"channel": %(channel)j,',
       '"duration": %(duration)s,',
       '"vcodec": %(vcodec)j,',
       '"acodec": %(acodec)j',
@@ -320,6 +351,9 @@ export class MediaDownloader {
     return {
       url,
       title: asString(info.title) || 'No title',
+      description: asString(info.description) || undefined,
+      authorName: asString(info.uploader) || asString(info.channel) || undefined,
+      authorUsername: asString(info.uploader_id) || undefined,
       duration: info.duration != null ? Number(info.duration) : undefined,
       format: hasVideo ? 'video' : 'audio',
     };

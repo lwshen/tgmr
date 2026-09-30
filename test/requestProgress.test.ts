@@ -147,12 +147,14 @@ function stubDownload(
     gate?: Promise<void>;
     sizeBytes?: number;
     omitProbeSize?: boolean;
+    metadata?: Partial<MediaMetadata>;
   } = {},
 ) {
   const format = options.format ?? 'video';
+  const metadata = { title: 'Test', format, ...options.metadata };
   const info = t.mock.method(downloader, 'getMediaInfo', async (url: string) => {
     events.push('extract');
-    return { url, title: 'Test', format };
+    return { url, ...metadata };
   });
   const download = t.mock.method(downloader, 'download', async (url: string) => {
     events.push('download');
@@ -167,7 +169,7 @@ function stubDownload(
         if (options.sizeBytes !== undefined) await truncate(path, options.sizeBytes);
       }),
     );
-    return { success: true, filePaths, mediaInfo: { url, title: 'Test', format } };
+    return { success: true, filePaths, mediaInfo: { url, ...metadata } };
   });
   return { info, download };
 }
@@ -357,3 +359,46 @@ test('a file exactly at the size limit is sent successfully', async (t) => {
   assert.ok(request.events.includes('sendVideo'));
   assert.equal(request.statuses.size, 0);
 });
+
+for (const [format, count, method] of [
+  ['video', 1, 'sendVideo'],
+  ['image', 1, 'sendPhoto'],
+  ['audio', 1, 'sendVoice'],
+  ['video', 3, 'sendMediaGroup'],
+  ['video', 11, 'sendMediaGroup'],
+] as const) {
+  test(`${format} replies with ${count} items include the body and author without +info`, async (t) => {
+    const url = link(`caption-${format}-${count}`);
+    const request = requestContext(url);
+    const metadata = {
+      description: '帖子正文\n第二行',
+      authorName: 'User Nickname',
+      authorUsername: 'YEngXX',
+    };
+    const { download } = stubDownload(t, request.events, { format, count, metadata });
+    await handleMessage(request.ctx);
+    const payload = request.calls.find((call) => call.method === method)!.payload;
+    const media = payload.media as { caption?: string; parse_mode?: string }[] | undefined;
+    const captioned = method === 'sendMediaGroup' ? media![0] : payload;
+    const footer = `🔗 [User Nickname \\(@YEngXX\\)](${url})`;
+    assert.equal(captioned.caption, `帖子正文\n第二行\n\n${footer}`);
+    assert.equal(captioned.parse_mode, 'MarkdownV2');
+    if (method === 'sendMediaGroup') assert.ok(media!.slice(1).every((item) => !item.caption));
+    if (count === 11) {
+      const tail = request.calls.find((call) => call.method === 'sendVideo')!.payload;
+      assert.equal(tail.caption, footer);
+    }
+    // Cached media must retain attribution and honor +info on the new request.
+    const cached = requestContext(`${url} +info`);
+    await handleMessage(cached.ctx);
+    const cachedPayload = cached.calls.find((call) => call.method === method)!.payload;
+    const cachedCaption =
+      method === 'sendMediaGroup'
+        ? (cachedPayload.media as { caption: string }[])[0].caption
+        : (cachedPayload.caption as string);
+    assert.ok(cachedCaption.startsWith('帖子正文\n第二行\n\n'));
+    assert.ok(cachedCaption.includes('MB'));
+    assert.ok(cachedCaption.endsWith(footer));
+    assert.equal(download.mock.callCount(), 1);
+  });
+}

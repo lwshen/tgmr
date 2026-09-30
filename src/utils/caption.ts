@@ -1,4 +1,5 @@
 import { escapeMarkdownV2, escapeMarkdownV2Url, normalizeLineBreaks } from './markdown.js';
+import type { MediaMetadata } from '../services/downloader.js';
 
 // Telegram media captions are capped at 1024 chars.
 const TELEGRAM_CAPTION_MAX = 1024;
@@ -9,51 +10,75 @@ export interface CaptionMediaItem {
   fileSizeMB: string;
 }
 
-/**
- * Truncates a raw (pre-escape) title so the final caption fits within
- * Telegram's 1024-char cap. `suffixLength` is the already-known escaped
- * tail length (link syntax + info/size block). A 2x factor conservatively
- * accounts for MarkdownV2 escape expansion.
- */
-function truncateTitleForCaption(title: string, suffixLength: number): string {
-  // The result is MarkdownV2 inline-link label text, which must be single-line:
-  // a literal newline inside [label](url) makes Telegram reject the caption (400).
-  const oneLine = title.replace(/\s*\n+\s*/g, ' ');
-  const budget = TELEGRAM_CAPTION_MAX - suffixLength - 1; // -1 for the ellipsis
+type CaptionMetadata = Pick<
+  MediaMetadata,
+  'title' | 'description' | 'authorName' | 'authorUsername'
+>;
+
+/** Budget escaped text by code point to preserve newlines and whole emoji. */
+function truncateForCaption(text: string, budget: number): string {
   if (budget <= 0) return '';
-  const maxRawTitle = Math.floor(budget / 2);
-  if (oneLine.length <= maxRawTitle) return oneLine;
-  // budget === 1 → maxRawTitle === 0: no room for even one title char.
-  if (maxRawTitle <= 0) return '';
-  // Slice by code point (not UTF-16 unit) so a multi-byte emoji at the cut
-  // boundary isn't split into a lone surrogate — Telegram rejects those (400).
-  // Each code point still contributes ≤ 2 escaped units, so the cap holds.
-  const truncated = Array.from(oneLine)
-    .slice(0, maxRawTitle - 1)
-    .join('');
+  const escaped = escapeMarkdownV2(text);
+  if (escaped.length <= budget) return escaped;
+  let truncated = '';
+  for (const char of text) {
+    const next = escapeMarkdownV2(char);
+    if (truncated.length + next.length > budget - 1) break;
+    truncated += next;
+  }
   return truncated.trimEnd() + '…';
 }
 
-export function buildSingleCaption(title: string, url: string, item: CaptionMediaItem): string {
-  const escapedUrl = escapeMarkdownV2Url(url);
-  const escapedInfo = escapeMarkdownV2(item.streamInfo);
-  const escapedSize = escapeMarkdownV2(item.fileSizeMB);
-  const infoBlock = `\`${escapedInfo}, ${escapedSize}MB\``;
-  // Fixed tail: `](url)\n\`info, sizeMB\``, plus the leading `[` of the link
-  const suffix = `](${escapedUrl})\n${infoBlock}`;
-  // If even a zero-length title plus the link would exceed the cap
-  // (pathologically long URL), drop the link entirely and emit info only.
-  if (suffix.length + 2 > TELEGRAM_CAPTION_MAX) return infoBlock;
-  const truncated = truncateTitleForCaption(normalizeLineBreaks(title), suffix.length + 1);
-  return `[${escapeMarkdownV2(truncated)}${suffix}`;
+function buildPostCaption(
+  metadata: CaptionMetadata,
+  url: string,
+  infoBlock = '',
+  includeBody = true,
+): string {
+  const name = (metadata.authorName ?? '').replace(/\s+/g, ' ').trim();
+  const username = (metadata.authorUsername ?? '').replace(/\s+/g, ' ').trim().replace(/^@+/, '');
+  const author =
+    name && username && name !== username && name !== `@${username}`
+      ? `${name} (@${username})`
+      : username
+        ? `@${username}`
+        : name || 'Original post';
+  const label = truncateForCaption(author, 256);
+  let footer = `🔗 [${label}](${escapeMarkdownV2Url(url)})`;
+  // An exceptionally long URL cannot fit in a caption; keep the author text.
+  if (footer.length > TELEGRAM_CAPTION_MAX) footer = `🔗 ${label}`;
+  let suffix = infoBlock ? `${infoBlock}\n\n${footer}` : footer;
+  if (suffix.length > TELEGRAM_CAPTION_MAX) suffix = footer;
+  const body = includeBody
+    ? truncateForCaption(
+        normalizeLineBreaks(metadata.description ?? metadata.title),
+        TELEGRAM_CAPTION_MAX - suffix.length - 2,
+      )
+    : '';
+  return body ? `${body}\n\n${suffix}` : suffix;
+}
+
+export function buildSingleCaption(
+  metadata: CaptionMetadata,
+  url: string,
+  item: CaptionMediaItem,
+  showInfo = false,
+  includeBody = true,
+): string {
+  const infoBlock = showInfo
+    ? `\`${escapeMarkdownV2(item.streamInfo)}, ${escapeMarkdownV2(item.fileSizeMB)}MB\``
+    : '';
+  return buildPostCaption(metadata, url, infoBlock, includeBody);
 }
 
 export function buildGroupCaption(
-  title: string,
+  metadata: CaptionMetadata,
   url: string,
   chunk: CaptionMediaItem[],
   isFirstChunk: boolean,
+  showInfo = false,
 ): string {
+  if (!showInfo) return buildPostCaption(metadata, url, '', isFirstChunk);
   const imageFormats = new Map<string, { count: number; codec: string; dims: string | null }>();
   const videoFormats = new Map<string, { count: number; codec: string; dims: string | null }>();
   let chunkTotalSize = 0;
@@ -102,13 +127,5 @@ export function buildGroupCaption(
     ? `\`${escapedSummary}, ${escapedSize}MB total\``
     : `\`${escapedSize}MB total\``;
 
-  if (isFirstChunk) {
-    const escapedUrl = escapeMarkdownV2Url(url);
-    const suffix = `](${escapedUrl})\n${sizeLabel}`;
-    // Same pathological-URL guard as the single-media case
-    if (suffix.length + 2 > TELEGRAM_CAPTION_MAX) return sizeLabel;
-    const truncated = truncateTitleForCaption(normalizeLineBreaks(title), suffix.length + 1);
-    return `[${escapeMarkdownV2(truncated)}${suffix}`;
-  }
-  return sizeLabel;
+  return buildPostCaption(metadata, url, sizeLabel, isFirstChunk);
 }
