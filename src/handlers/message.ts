@@ -216,7 +216,13 @@ export async function handleMessage(ctx: Context): Promise<void> {
     if (!url) return;
 
     const rateLimitKey = userId && !isAnonymousAdmin ? userId : chatId;
-    if (!RateLimiter.getInstance().tryConsume(rateLimitKey)) {
+    // Match an identifiable user, never the chat ID or an anonymous sender.
+    const isRateLimitExempt =
+      userId !== undefined &&
+      !isAnonymousAdmin &&
+      !ctx.message?.sender_chat &&
+      env.RATE_LIMIT_EXEMPT_USER_IDS.has(userId);
+    if (!isRateLimitExempt && !RateLimiter.getInstance().tryConsume(rateLimitKey)) {
       logger.info(`Rate limited ${userInfo}`, logCtx);
       await ctx.reply('You are sending requests too quickly. Please try again later.', {
         reply_parameters: { message_id: messageId, allow_sending_without_reply: true },

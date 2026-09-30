@@ -21,6 +21,7 @@ services:
       - DOWNLOAD_TIMEOUT=${DOWNLOAD_TIMEOUT:-120}
       - RATE_LIMIT=${RATE_LIMIT:-10}
       - COOLDOWN=${COOLDOWN:-60}
+      - RATE_LIMIT_EXEMPT_USER_IDS=${RATE_LIMIT_EXEMPT_USER_IDS:-}
       - TMP_DIR=${TMP_DIR:-/tmp/tgmr}
       - SUPPORTED_DOMAINS=${SUPPORTED_DOMAINS:-bandcamp.com,facebook.com,youtube.com,youtu.be,vimeo.com,soundcloud.com,mixcloud.com,instagram.com,twitter.com,x.com}
     volumes:

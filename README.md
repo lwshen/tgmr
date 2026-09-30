@@ -47,8 +47,9 @@ Environment variables in `docker-compose.yml`:
 | `BOT_TOKEN` | Telegram Bot API token | Required |
 | `MAX_FILE_SIZE` | Maximum file size in bytes | 50000000 (50MB) |
 | `DOWNLOAD_TIMEOUT` | Download timeout in seconds | 300 |
-| `RATE_LIMIT` | Maximum requests per minute | 10 |
-| `COOLDOWN` | Cooldown between requests in seconds | 60 |
+| `RATE_LIMIT` | Maximum media requests per user per minute | 10 |
+| `COOLDOWN` | Cooldown after exceeding the user limit (seconds) | 60 |
+| `RATE_LIMIT_EXEMPT_USER_IDS` | Comma-separated user IDs exempt from user rate limits | '' |
 | `TMP_DIR` | Temporary directory for downloads | /tmp/tgmr |
 | `SUPPORTED_DOMAINS` | Comma-separated list of domains | youtube.com,youtu.be,... |
 | `COOKIES_FILE` | Default cookies file (fallback) | '' |

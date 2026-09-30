@@ -19,12 +19,29 @@ function requirePositiveInt(name: string, raw: string | undefined, fallback: num
   return val;
 }
 
+function parseRateLimitExemptUserIds(raw: string | undefined): ReadonlySet<number> {
+  const ids = new Set<number>();
+  for (const part of (raw ?? '').split(',')) {
+    const value = part.trim();
+    if (!value) continue;
+    const id = Number(value);
+    if (!/^\d+$/.test(value) || !Number.isSafeInteger(id) || id <= 0) {
+      throw new Error(
+        'RATE_LIMIT_EXEMPT_USER_IDS must contain comma-separated positive integer user IDs',
+      );
+    }
+    ids.add(id);
+  }
+  return ids;
+}
+
 export const env = {
   BOT_TOKEN,
   MAX_FILE_SIZE: requirePositiveInt('MAX_FILE_SIZE', process.env.MAX_FILE_SIZE, 50 * 1024 * 1024),
   DOWNLOAD_TIMEOUT: requirePositiveInt('DOWNLOAD_TIMEOUT', process.env.DOWNLOAD_TIMEOUT, 120),
   RATE_LIMIT: requirePositiveInt('RATE_LIMIT', process.env.RATE_LIMIT, 10),
   COOLDOWN: requirePositiveInt('COOLDOWN', process.env.COOLDOWN, 60),
+  RATE_LIMIT_EXEMPT_USER_IDS: parseRateLimitExemptUserIds(process.env.RATE_LIMIT_EXEMPT_USER_IDS),
   TMP_DIR: resolve(process.env.TMP_DIR || './tmp'),
   SUPPORTED_DOMAINS: (process.env.SUPPORTED_DOMAINS || 'youtube.com,youtu.be')
     .split(',')
