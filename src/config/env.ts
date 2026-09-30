@@ -13,7 +13,7 @@ function requirePositiveInt(name: string, raw: string | undefined, fallback: num
     throw new Error(`${name} must be a positive integer, got: "${raw}"`);
   }
   const val = Number(raw);
-  if (val <= 0) {
+  if (!Number.isSafeInteger(val) || val <= 0) {
     throw new Error(`${name} must be a positive integer, got: "${raw}"`);
   }
   return val;
@@ -37,6 +37,11 @@ function parseRateLimitExemptUserIds(raw: string | undefined): ReadonlySet<numbe
 
 export const env = {
   BOT_TOKEN,
+  MAX_CONCURRENT_MESSAGES: requirePositiveInt(
+    'MAX_CONCURRENT_MESSAGES',
+    process.env.MAX_CONCURRENT_MESSAGES,
+    3,
+  ),
   MAX_FILE_SIZE: requirePositiveInt('MAX_FILE_SIZE', process.env.MAX_FILE_SIZE, 50 * 1024 * 1024),
   DOWNLOAD_TIMEOUT: requirePositiveInt('DOWNLOAD_TIMEOUT', process.env.DOWNLOAD_TIMEOUT, 120),
   RATE_LIMIT: requirePositiveInt('RATE_LIMIT', process.env.RATE_LIMIT, 10),

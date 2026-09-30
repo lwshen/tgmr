@@ -17,6 +17,7 @@ services:
     env_file: .env
     environment:
       - BOT_TOKEN=${BOT_TOKEN:?Set BOT_TOKEN in .env}
+      - MAX_CONCURRENT_MESSAGES=${MAX_CONCURRENT_MESSAGES:-3}
       - MAX_FILE_SIZE=${MAX_FILE_SIZE:-52428800}
       - DOWNLOAD_TIMEOUT=${DOWNLOAD_TIMEOUT:-120}
       - RATE_LIMIT=${RATE_LIMIT:-10}

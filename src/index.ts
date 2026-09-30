@@ -1,4 +1,7 @@
 import { BOT_COMMANDS, createBot } from './bot/index.js';
+import { startBotRunner } from './bot/runner.js';
+import type { RunnerHandle } from '@grammyjs/runner';
+import { env } from './config/env.js';
 import { logger } from './utils/logger.js';
 import { Cleanup } from './utils/cleanup.js';
 import { RateLimiter } from './utils/rateLimit.js';
@@ -25,8 +28,9 @@ async function main(): Promise<void> {
     const bot = await createBot();
     logger.info('Starting bot...');
 
+    let runner: RunnerHandle;
     try {
-      await bot.api.getMe();
+      runner = await startBotRunner(bot);
     } catch (error) {
       if (error instanceof Error && error.message.includes('404: Not Found')) {
         logger.error('Invalid bot token');
@@ -50,7 +54,7 @@ async function main(): Promise<void> {
       hardExit.unref();
 
       try {
-        await bot.stop();
+        await runner.stop();
       } catch (error) {
         logger.error('Error stopping bot', { error });
       }
@@ -64,16 +68,14 @@ async function main(): Promise<void> {
     process.on('SIGTERM', () => void shutdown());
     process.on('SIGINT', () => void shutdown());
 
-    await bot.start({
-      onStart: (botInfo) => {
-        logger.info(`Bot @${botInfo.username} is starting...`);
-        // Menu registration must not delay polling if Telegram is slow.
-        void bot.api.setMyCommands(BOT_COMMANDS).catch((error) => {
-          logger.error('Failed to update bot command menu', { error });
-        });
-      },
-      drop_pending_updates: true,
+    logger.info(`Bot @${bot.botInfo.username} is starting...`, {
+      concurrency: env.MAX_CONCURRENT_MESSAGES,
     });
+    // Menu registration must not delay polling if Telegram is slow.
+    void bot.api.setMyCommands(BOT_COMMANDS).catch((error) => {
+      logger.error('Failed to update bot command menu', { error });
+    });
+    await runner.task();
   } catch (error) {
     logger.error('Failed to start bot', { error });
     process.exit(1);

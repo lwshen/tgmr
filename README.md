@@ -14,6 +14,7 @@ A Telegram bot that automatically downloads and replies with media content when 
 - Sends audio-only content as voice messages
 - Sends videos with thumbnails and proper aspect ratio
 - Works in both private chats and groups
+- Processes messages concurrently, including multiple requests in the same chat
 - Includes detailed media information in captions (format, quality, size)
 - Efficient temporary file management
 - Rate limiting to prevent spam and abuse
@@ -45,6 +46,7 @@ Environment variables in `docker-compose.yml`:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `BOT_TOKEN` | Telegram Bot API token | Required |
+| `MAX_CONCURRENT_MESSAGES` | Maximum messages processed concurrently (positive integer) | 3 |
 | `MAX_FILE_SIZE` | Maximum file size in bytes | 50000000 (50MB) |
 | `DOWNLOAD_TIMEOUT` | Download timeout in seconds | 300 |
 | `RATE_LIMIT` | Maximum media requests per user per minute | 10 |
@@ -106,6 +108,10 @@ Note: Keep your cookie files secure as they contain sensitive authentication dat
 
 A reply to your link tracks progress and is deleted after successful delivery. Errors and partial-delivery notices remain visible.
 The same stages and successful delivery are logged with the chat and message IDs.
+
+Messages are processed concurrently, including messages in the same chat, so replies may finish out of order.
+Set `MAX_CONCURRENT_MESSAGES` to control the limit (use `1` for sequential processing).
+Downloads remain capped at 5 at a time; duplicate links share a download and receive separate replies.
 
 ### Commands
 

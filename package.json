@@ -26,6 +26,7 @@
     "node": "^20.19.0 || ^22.13.0 || >=24.0.0"
   },
   "dependencies": {
+    "@grammyjs/runner": "^2.0.3",
     "grammy": "^1.44.0"
   },
   "devDependencies": {

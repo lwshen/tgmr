@@ -75,6 +75,13 @@
     "@eslint/core" "^1.2.1"
     levn "^0.4.1"
 
+"@grammyjs/runner@^2.0.3":
+  version "2.0.3"
+  resolved "https://registry.npmjs.org/@grammyjs/runner/-/runner-2.0.3.tgz#cfb08958fd563ce1e0eda5754a40b3d632c4eaa1"
+  integrity sha512-nckmTs1dPWfVQteK9cxqxzE+0m1VRvluLWB8UgFzsjg62w3qthPJt0TYtJBEdG7OedvfQq4vnFAyE6iaMkR42A==
+  dependencies:
+    abort-controller "^3.0.0"
+
 "@grammyjs/types@3.28.0":
   version "3.28.0"
   resolved "https://registry.yarnpkg.com/@grammyjs/types/-/types-3.28.0.tgz#6fae33ef8d8fa8804e1d25bdb39ddaa3210ed134"
