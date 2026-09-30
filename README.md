@@ -110,6 +110,9 @@ Note: Keep your cookie files secure as they contain sensitive authentication dat
 
 ## Development
 
+Create a `.env` file from `.env.example` if you do not already have one, and set `BOT_TOKEN`.
+`yarn dev` loads this file automatically. Restart it after changing `.env`.
+
 ```bash
 yarn install
 yarn build
