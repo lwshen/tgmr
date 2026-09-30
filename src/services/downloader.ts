@@ -34,6 +34,8 @@ export interface MediaMetadata {
 
 /** Coerce an unknown JSON field (from external tool output) to a string. */
 const asString = (v: unknown): string => (typeof v === 'string' ? v : '');
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
 
 export class MediaDownloader {
   private static instance: MediaDownloader;
@@ -134,17 +136,18 @@ export class MediaDownloader {
   }
 
   private async getGalleryDlInfo(url: string): Promise<MediaMetadata> {
-    let stdout: string;
     try {
       // --retries 0: bail immediately on 429 instead of letting gallery-dl
       // burn our 15s budget on internal back-off. The host-cooldown layer
       // (set in catch below) prevents future requests until it's safe.
-      const result = await safeExec(
+      const { stdout, stderr } = await safeExec(
         'gallery-dl',
         ['--retries', '0', '-j', ...this.getGalleryDlPerUrlArgs(url), url],
         { timeout: INFO_FETCH_TIMEOUT_SEC },
       );
-      stdout = result.stdout;
+      // JSON mode can exit successfully with [-1, { error, message }]. Parse
+      // inside this try so those failures also reach the rate-limit handler.
+      return this.parseGalleryDlInfo(url, stdout, stderr);
     } catch (error) {
       if (isRateLimitError(error)) {
         const host = this.getHostname(url);
@@ -153,28 +156,58 @@ export class MediaDownloader {
       }
       throw error;
     }
+  }
+
+  private parseGalleryDlInfo(url: string, stdout: string, stderr: string): MediaMetadata {
+    const diagnostic = stderr.trim();
+    const failure = (message: string): Error =>
+      new Error(diagnostic ? `${message}\n${diagnostic}` : message);
 
     let output: unknown;
     try {
       output = JSON.parse(stdout);
     } catch {
-      throw new Error('Failed to parse gallery-dl JSON output');
+      throw failure('Failed to parse gallery-dl JSON output');
     }
 
-    if (!Array.isArray(output) || output.length === 0) {
-      throw new Error('Unexpected gallery-dl output structure: expected non-empty array');
+    if (!Array.isArray(output)) {
+      throw failure('Unexpected gallery-dl output structure: expected array');
     }
 
-    const postMetadata = (output[0]?.[1] ?? {}) as Record<string, unknown>;
-    const mediaTypes = output.slice(1).map((item: unknown[]) => {
-      if (!Array.isArray(item) || item.length < 3 || !item[2]) {
-        return { url: String(item?.[1] ?? '') };
+    // Check every record: extraction may fail after emitting some media.
+    const errorRecord = output.find((item: unknown) => Array.isArray(item) && item[0] === -1);
+    if (errorRecord) {
+      const details = isRecord(errorRecord[1]) ? errorRecord[1] : {};
+      const kind = asString(details.error) || 'Unknown error';
+      const message = asString(details.message);
+      throw failure(`gallery-dl extraction failed: ${kind}${message ? `: ${message}` : ''}`);
+    }
+
+    let postMetadata: Record<string, unknown> | undefined;
+    const mediaTypes: MediaType[] = [];
+    for (const item of output) {
+      if (!Array.isArray(item)) {
+        throw failure('Unexpected gallery-dl output structure: expected message arrays');
       }
-      const [, itemUrl, metadata] = item as [unknown, string, MediaType];
-      const { display_url, ...rest } = metadata;
-      return { ...rest, url: asString(display_url) || itemUrl };
-    });
+      if (item[0] === 2 && isRecord(item[1])) {
+        postMetadata ??= item[1];
+      } else if (item[0] === 3) {
+        // Only URL messages represent downloadable files. Directory and
+        // queue messages must not inflate the image count.
+        const itemUrl = asString(item[1]);
+        if (!itemUrl || !isRecord(item[2])) {
+          throw failure('Unexpected gallery-dl media record');
+        }
+        const { display_url, ...rest } = item[2];
+        mediaTypes.push({ ...rest, url: asString(display_url) || itemUrl });
+      }
+    }
 
+    if (mediaTypes.length === 0) {
+      throw failure('No downloadable media found in gallery-dl output');
+    }
+
+    postMetadata ??= mediaTypes[0];
     const title =
       asString(postMetadata.tweet_text) ||
       asString(postMetadata.description) ||
