@@ -16,6 +16,7 @@ import type { ChatAction } from '../utils/chatAction.js';
 import { normalizeUrl } from '../utils/urlNormalize.js';
 import { withTelegramFlood } from '../utils/telegramFlood.js';
 import { getCooldownRemainingMs } from '../utils/hostCooldown.js';
+import { getMediaErrorReply } from '../utils/mediaError.js';
 
 const BYTES_PER_MB = 1024 * 1024;
 const MAX_MEDIA_GROUP_SIZE = 10;
@@ -162,7 +163,7 @@ async function getCachedDownload(url: string): Promise<CachedDownload | null> {
 
 // Tracks downloads currently in progress so concurrent duplicate-URL requests
 // share the single download instead of both writing to the same filename.
-// Resolves to null on download failure; callers handle that themselves.
+// Extraction errors are shared with every waiting caller for a specific reply.
 const inFlightDownloads = new Map<string, Promise<CachedDownload | null>>();
 
 // Snapshot of files owned by live cache entries — the periodic cleanup sweep
@@ -326,7 +327,7 @@ async function processMediaRequest(
   } catch (error) {
     logger.error('Failed to process media request', { ...logCtx, error });
     await ctx
-      .reply('Failed to process media request', {
+      .reply(getMediaErrorReply(error), {
         reply_parameters: { message_id: messageId, allow_sending_without_reply: true },
       })
       .catch(() => {});
@@ -359,7 +360,8 @@ async function sendResult(
 
 /**
  * Runs fetch info → download → probe → cache. Returns the cached entry on
- * success, or null on failure (with files cleaned up). Shared across
+ * success, or null when no files were produced. Extraction errors propagate
+ * to the caller for a specific reply (with files cleaned up). Shared across
  * concurrent duplicate-URL requests via inFlightDownloads so only one
  * actual download ever hits the filesystem for a given URL.
  */
@@ -375,7 +377,6 @@ async function runDownloadPipeline(
 
   try {
     const mediaInfo = await fetchMediaInfo(downloader, url, actionManager, logCtx);
-    if (!mediaInfo) return null;
 
     // Hold a download slot only around the actual download — the metadata fetch
     // (above) and probe/thumbnail work (buildMediaItems, bounded separately by
@@ -410,9 +411,6 @@ async function runDownloadPipeline(
     downloadCache.set(key, entry);
     cached = true;
     return entry;
-  } catch (error) {
-    logger.error('Download pipeline failed', { ...logCtx, error });
-    return null;
   } finally {
     if (!cached) {
       await cleanupFiles(filePaths, mediaItems, MediaDownloader.getInstance(), logCtx);
@@ -425,19 +423,14 @@ async function fetchMediaInfo(
   url: string,
   actionManager: ChatActionManager,
   logCtx: Record<string, unknown>,
-): Promise<MediaMetadata | null> {
+): Promise<MediaMetadata> {
   await actionManager.start('typing');
   logger.info('Fetching media info...', logCtx);
-  try {
-    return await withRetry(() => downloader.getMediaInfo(url), {
-      maxAttempts: 3,
-      initialDelay: 1000,
-      maxDelay: 5000,
-    });
-  } catch (error) {
-    logger.warn('Failed to get media info', { ...logCtx, error });
-    return null;
-  }
+  return withRetry(() => downloader.getMediaInfo(url), {
+    maxAttempts: 3,
+    initialDelay: 1000,
+    maxDelay: 5000,
+  });
 }
 
 async function downloadMedia(

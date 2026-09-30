@@ -5,6 +5,8 @@ import { logger } from '../utils/logger.js';
 import { safeExec } from '../utils/exec.js';
 import { assertSafePath } from '../utils/pathSafety.js';
 import { applyRateLimitFromError, isRateLimitError } from '../utils/hostCooldown.js';
+import { MediaError, type MediaErrorCode } from '../utils/mediaError.js';
+import { getTwitterPostStatus } from './twitterPostStatus.js';
 import type { DownloadOptions, DownloadResult } from '../types/index.js';
 
 const MAX_FILES_PER_DOWNLOAD = 100;
@@ -36,6 +38,22 @@ export interface MediaMetadata {
 const asString = (v: unknown): string => (typeof v === 'string' ? v : '');
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
+
+class GalleryDlError extends MediaError {
+  constructor(
+    public readonly kind: string,
+    public readonly detail: string,
+    diagnostic: string,
+  ) {
+    const code = ['AuthRequired', 'AuthenticationError', 'AuthorizationError'].includes(kind)
+      ? 'authentication_required'
+      : kind === 'NotFoundError' || (kind === 'AbortExtraction' && /unavailable/i.test(detail))
+        ? 'unavailable'
+        : 'extraction_failed';
+    const message = `gallery-dl extraction failed: ${kind}${detail ? `: ${detail}` : ''}`;
+    super(code, diagnostic ? `${message}\n${diagnostic}` : message);
+  }
+}
 
 export class MediaDownloader {
   private static instance: MediaDownloader;
@@ -153,6 +171,16 @@ export class MediaDownloader {
         const host = this.getHostname(url);
         const message = error instanceof Error ? error.message : String(error);
         if (host) applyRateLimitFromError(host, message);
+      } else if (
+        error instanceof GalleryDlError &&
+        ((error.kind === 'KeyError' && error.detail === "'result'") || error.code === 'unavailable')
+      ) {
+        const status = await getTwitterPostStatus(url);
+        if (status) {
+          throw new MediaError(status, `X reports this post is ${status}. ${error.message}`, {
+            cause: error,
+          });
+        }
       }
       throw error;
     }
@@ -160,8 +188,8 @@ export class MediaDownloader {
 
   private parseGalleryDlInfo(url: string, stdout: string, stderr: string): MediaMetadata {
     const diagnostic = stderr.trim();
-    const failure = (message: string): Error =>
-      new Error(diagnostic ? `${message}\n${diagnostic}` : message);
+    const failure = (message: string, code: MediaErrorCode = 'extraction_failed'): MediaError =>
+      new MediaError(code, diagnostic ? `${message}\n${diagnostic}` : message);
 
     let output: unknown;
     try {
@@ -180,7 +208,7 @@ export class MediaDownloader {
       const details = isRecord(errorRecord[1]) ? errorRecord[1] : {};
       const kind = asString(details.error) || 'Unknown error';
       const message = asString(details.message);
-      throw failure(`gallery-dl extraction failed: ${kind}${message ? `: ${message}` : ''}`);
+      throw new GalleryDlError(kind, message, diagnostic);
     }
 
     let postMetadata: Record<string, unknown> | undefined;
@@ -204,7 +232,7 @@ export class MediaDownloader {
     }
 
     if (mediaTypes.length === 0) {
-      throw failure('No downloadable media found in gallery-dl output');
+      throw failure('No downloadable media found in gallery-dl output', 'no_media');
     }
 
     postMetadata ??= mediaTypes[0];
