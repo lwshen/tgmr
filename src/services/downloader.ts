@@ -4,6 +4,7 @@ import { env, findSiteByDomain, getCookieFileForDomain, getSiteHeaders } from '.
 import { logger } from '../utils/logger.js';
 import { safeExec } from '../utils/exec.js';
 import { assertSafePath } from '../utils/pathSafety.js';
+import { getYtDlpOutputArgs } from '../utils/ytDlpFilename.js';
 import { applyRateLimitFromError, isRateLimitError } from '../utils/hostCooldown.js';
 import { MediaError, type MediaErrorCode } from '../utils/mediaError.js';
 import { getTwitterPostStatus } from './twitterPostStatus.js';
@@ -431,7 +432,6 @@ export class MediaDownloader {
 
   private async downloadVideosWithYtDlp(url: string, options: DownloadOptions): Promise<string[]> {
     const formatSpec = this.getFormatSpec('video', options.maxFileSize);
-    const outputTemplate = `${env.TMP_DIR}/%(title)s-%(id)s.%(ext)s`;
 
     // --ignore-errors: skip image items in carousels (yt-dlp can't handle images)
     // No --no-playlist: process all video items in a carousel
@@ -445,9 +445,7 @@ export class MediaDownloader {
           '--format',
           formatSpec,
           '--ignore-errors',
-          '--output',
-          outputTemplate,
-          '--restrict-filenames',
+          ...getYtDlpOutputArgs(env.TMP_DIR),
           '--no-mtime',
           '--merge-output-format',
           'mp4',
@@ -506,7 +504,6 @@ export class MediaDownloader {
 
   private async downloadWithYtDlp(url: string, options: DownloadOptions): Promise<string[]> {
     const formatSpec = this.getFormatSpec(options.format, options.maxFileSize);
-    const outputTemplate = `${env.TMP_DIR}/%(title)s-%(id)s.%(ext)s`;
     // Write per-video thumbnail to disk for video format so buildMediaItems
     // can read it without an extra HTTP round-trip. Audio/image formats don't
     // use thumbnails (replyWithVoice/replyWithPhoto don't accept them).
@@ -523,9 +520,7 @@ export class MediaDownloader {
           '--format',
           formatSpec,
           '--no-playlist',
-          '--output',
-          outputTemplate,
-          '--restrict-filenames',
+          ...getYtDlpOutputArgs(env.TMP_DIR),
           '--no-mtime',
           ...videoArgs,
           '--quiet',
