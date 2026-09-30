@@ -1,4 +1,4 @@
-import { createBot } from './bot/index.js';
+import { BOT_COMMANDS, createBot } from './bot/index.js';
 import { logger } from './utils/logger.js';
 import { Cleanup } from './utils/cleanup.js';
 import { RateLimiter } from './utils/rateLimit.js';
@@ -67,6 +67,10 @@ async function main(): Promise<void> {
     await bot.start({
       onStart: (botInfo) => {
         logger.info(`Bot @${botInfo.username} is starting...`);
+        // Menu registration must not delay polling if Telegram is slow.
+        void bot.api.setMyCommands(BOT_COMMANDS).catch((error) => {
+          logger.error('Failed to update bot command menu', { error });
+        });
       },
       drop_pending_updates: true,
     });

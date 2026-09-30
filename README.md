@@ -107,6 +107,9 @@ Note: Keep your cookie files secure as they contain sensitive authentication dat
 
 - `/start` - Introduction message
 - `/help` - Usage instructions
+- `/whoami` - User and chat info
+
+The command menu is updated automatically when the bot starts.
 
 ## Development
 

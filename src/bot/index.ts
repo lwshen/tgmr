@@ -1,9 +1,16 @@
 import { Bot } from 'grammy';
+import type { BotCommand } from 'grammy/types';
 import { env } from '../config/env.js';
 import { handleMessage } from '../handlers/message.js';
 import { mkdir } from 'fs/promises';
 import { logger } from '../utils/logger.js';
 import { getSupportedPlatforms } from '../utils/url.js';
+
+export const BOT_COMMANDS: readonly BotCommand[] = [
+  { command: 'start', description: 'Introduction message' },
+  { command: 'help', description: 'Usage instructions' },
+  { command: 'whoami', description: 'Show your Telegram user and chat information' },
+];
 
 // Cache bot permission checks per chat (5-minute TTL)
 const PERMISSION_CACHE_TTL = 5 * 60 * 1000;
@@ -50,9 +57,32 @@ export async function createBot(): Promise<Bot> {
     ctx.reply(
       `Send me a link from ${getSupportedPlatforms()}, and I'll download and send you the media.\n\n` +
         "For audio-only content, I'll send it as a voice message. For videos, I'll send them as video files. " +
-        "For images, I'll send them in the highest quality available.",
+        "For images, I'll send them in the highest quality available.\n\n" +
+        BOT_COMMANDS.map(({ command, description }) => `/${command} - ${description}`).join('\n'),
     ),
   );
+
+  bot.command('whoami', (ctx) => {
+    const lines: string[] = [];
+    const user = ctx.from;
+    const senderChat = ctx.senderChat;
+    if (senderChat) {
+      lines.push(
+        'You are sending as a chat. Your personal Telegram identity is hidden.',
+        `Sender chat ID: ${senderChat.id}`,
+      );
+    } else if (user) {
+      lines.push(
+        `User ID: ${user.id}`,
+        `Name: ${[user.first_name, user.last_name].filter(Boolean).join(' ')}`,
+        `Username: ${user.username ? `@${user.username}` : 'Not set'}`,
+      );
+    } else {
+      lines.push('Your Telegram user information is unavailable.');
+    }
+    lines.push(`Chat ID: ${ctx.chat.id}`, `Chat type: ${ctx.chat.type}`);
+    return ctx.reply(lines.join('\n'));
+  });
 
   bot.on('message:text', async (ctx) => {
     try {
