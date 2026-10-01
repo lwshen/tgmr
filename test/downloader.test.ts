@@ -7,6 +7,7 @@ import { MediaDownloader } from '../src/services/downloader.js';
 import { getCooldownRemainingMs } from '../src/utils/hostCooldown.js';
 import { withRetry } from '../src/utils/retry.js';
 import { MediaError } from '../src/utils/mediaError.js';
+import { env } from '../src/config/env.js';
 
 const downloader = MediaDownloader.getInstance();
 const url = 'https://x.com/example/status/123';
@@ -26,6 +27,7 @@ async function stubExtractor(
   stdout: string,
   stderr = '',
   tool = 'gallery-dl',
+  requiredOptions: string[] = [],
 ): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), 'tgmr-gallery-test-'));
   const previousPath = process.env.PATH;
@@ -36,7 +38,13 @@ async function stubExtractor(
   });
   await writeFile(
     join(dir, tool),
-    `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(stdout)});\n` +
+    `#!/usr/bin/env node
+const assert = require('node:assert/strict');
+const args = process.argv.slice(2);
+for (const option of ${JSON.stringify(requiredOptions)}) {
+  assert.ok(args.some((arg, index) => arg === '-o' && args[index + 1] === option), 'Missing option: ' + option);
+}
+process.stdout.write(${JSON.stringify(stdout)});\n` +
       `process.stderr.write(${JSON.stringify(stderr)});\n`,
     { mode: 0o700 },
   );
@@ -265,6 +273,59 @@ test('getMediaInfo retains a first URL message when directory metadata is absent
   assert.equal(info.format, 'image');
   assert.deepEqual(info.contentCounts, { images: 1, videos: 0 });
 });
+
+for (const [domain, extension] of [
+  ['x.com', 'mp4'],
+  ['twitter.com', 'jpg'],
+] as const) {
+  test(`${domain} retweets request original media and preserve its text and author`, async (t) => {
+    const retweetUrl = `https://${domain}/reposter/status/456`;
+    const original = {
+      content: 'Original post body',
+      author: { nick: 'Original Author', name: 'original' },
+      user: { nick: 'Reposting User', name: 'reposter' },
+    };
+    const requiredOptions = ['extractor.twitter.tweet.retweets="original"'];
+    await stubExtractor(
+      t,
+      JSON.stringify([
+        [2, original],
+        [3, `https://example.com/media.${extension}`, { extension }],
+      ]),
+      '',
+      'gallery-dl',
+      requiredOptions,
+    );
+    const info = await downloader.getMediaInfo(retweetUrl);
+    assert.equal(info.description, original.content);
+    assert.equal(info.authorName, original.author.nick);
+    assert.equal(info.authorUsername, original.author.name);
+    assert.deepEqual(
+      info.contentCounts,
+      extension === 'mp4' ? { images: 0, videos: 1 } : { images: 1, videos: 0 },
+    );
+
+    if (extension === 'jpg') {
+      // The download invocation needs the same option as metadata extraction.
+      await t.test('image downloads also enable retweet extraction', async (downloadTest) => {
+        const path = join(env.TMP_DIR, 'retweet.jpg');
+        await stubExtractor(downloadTest, path + '\n', '', 'gallery-dl', requiredOptions);
+        const result = await downloader.download(
+          retweetUrl,
+          {
+            format: info.format,
+            maxFileSize: env.MAX_FILE_SIZE,
+            timeout: 5,
+          },
+          info,
+        );
+        assert.equal(result.success, true);
+        assert.deepEqual(result.filePaths, [path]);
+        assert.equal(result.mediaInfo, info);
+      });
+    }
+  });
+}
 
 test('X metadata keeps the post body and original author rather than the timeline user', async (t) => {
   await stubExtractor(

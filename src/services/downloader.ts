@@ -125,6 +125,11 @@ export class MediaDownloader {
           args.push('-o', `extractor.${site.alias}.headers.${name}=${encoded}`);
         }
       }
+      if (site.alias === 'twitter') {
+        // Shared retweet links must resolve to the original media and author.
+        // Scope this to single posts so timeline extraction keeps its defaults.
+        args.push('-o', 'extractor.twitter.tweet.retweets="original"');
+      }
       if (site.alias === 'instagram') {
         args.push(
           '-o',
