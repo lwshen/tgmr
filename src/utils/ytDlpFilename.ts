@@ -1,5 +1,5 @@
 /** Keep filename titles useful after yt-dlp applies its restricted character set. */
-export function getYtDlpOutputArgs(outputDir: string): string[] {
+export function getYtDlpOutputArgs(outputDir: string, prefix = ''): string[] {
   return [
     '--restrict-filenames',
     // Use yt-dlp's own sanitization, including accent and Unicode normalization.
@@ -12,6 +12,6 @@ export function getYtDlpOutputArgs(outputDir: string): string[] {
     '^[^A-Za-z0-9]*$',
     'no title',
     '--output',
-    `${outputDir}/%(tgmr_filename_title|no title)s-%(id)s.%(ext)s`,
+    `${outputDir}/${prefix}%(tgmr_filename_title|no title)s-%(id)s.%(ext)s`,
   ];
 }

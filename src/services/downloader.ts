@@ -1,5 +1,6 @@
-import { unlink } from 'fs/promises';
+import { readdir, unlink } from 'fs/promises';
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import { env, findSiteByDomain, getCookieFileForDomain, getSiteHeaders } from '../config/env.js';
 import { logger } from '../utils/logger.js';
 import { safeExec } from '../utils/exec.js';
@@ -385,49 +386,49 @@ export class MediaDownloader {
     options: DownloadOptions,
     mediaInfo: MediaMetadata,
   ): Promise<DownloadResult> {
-    let filePaths: string[];
-
-    if (this.isImageSite(url)) {
-      const { images = 0, videos = 0 } = mediaInfo.contentCounts || {};
-      const written: string[] = [];
-      try {
-        if (images > 0) written.push(...(await this.downloadImagesWithGalleryDl(url, options)));
-      } catch (error) {
-        // Images are the primary content for image sites — a failure here is fatal.
-        await Promise.all(written.map((p) => this.cleanup(p)));
-        throw error;
-      }
-      if (videos > 0) {
-        try {
-          written.push(...(await this.downloadVideosWithYtDlp(url, options)));
-        } catch (error) {
-          // Videos totally failed. If we already have images, deliver those
-          // rather than discarding a valid partial result; otherwise rethrow.
-          if (written.length === 0) throw error;
-          logger.warn('Carousel videos failed; delivering images only', {
-            error: error instanceof Error ? error.message : String(error),
-          });
+    // Own every output (including .part files and thumbnails) before starting
+    // the subprocess, which may fail without ever printing a completed path.
+    // Each retry gets a fresh prefix; concurrent requests cannot clean each other.
+    const prefix = `${randomUUID()}_`;
+    let filePaths: string[] = [];
+    try {
+      if (this.isImageSite(url)) {
+        const { images = 0, videos = 0 } = mediaInfo.contentCounts || {};
+        const written: string[] = [];
+        if (images > 0) {
+          written.push(...(await this.downloadImagesWithGalleryDl(url, options, prefix)));
         }
+        if (videos > 0) {
+          try {
+            written.push(...(await this.downloadVideosWithYtDlp(url, options, prefix)));
+          } catch (error) {
+            // Keep the existing partial-result behavior for image carousels.
+            if (written.length === 0) throw error;
+            logger.warn('Carousel videos failed; delivering images only', {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        filePaths = written;
+      } else {
+        filePaths = await this.downloadWithYtDlp(url, options, prefix);
       }
-      filePaths = written;
-    } else {
-      filePaths = await this.downloadWithYtDlp(url, options);
-    }
 
-    if (filePaths.length === 0) {
-      return { success: false, error: 'No files were downloaded', filePaths: [] };
-    }
+      if (filePaths.length === 0) {
+        return { success: false, error: 'No files were downloaded', filePaths: [] };
+      }
 
-    return { success: true, filePaths, mediaInfo };
+      return { success: true, filePaths, mediaInfo };
+    } finally {
+      await this.cleanupDownloadRemnants(prefix, filePaths);
+    }
   }
 
   private async downloadImagesWithGalleryDl(
     url: string,
     options: DownloadOptions,
+    prefix: string,
   ): Promise<string[]> {
-    // Per-request filename prefix so two concurrent DISTINCT URLs whose media
-    // share a native filename can't collide/overwrite in the flat TMP_DIR.
-    const prefix = randomUUID().slice(0, 8);
     let stdout: string;
     try {
       ({ stdout } = await safeExec(
@@ -438,7 +439,7 @@ export class MediaDownloader {
           '--dest',
           env.TMP_DIR,
           '--filename',
-          `${prefix}_{filename}.{extension}`,
+          `${prefix}{filename}.{extension}`,
           '--no-mtime',
           '--filter',
           GALLERY_DL_IMAGE_FILTER,
@@ -469,7 +470,11 @@ export class MediaDownloader {
     return filePaths.map((p) => assertSafePath(p, env.TMP_DIR));
   }
 
-  private async downloadVideosWithYtDlp(url: string, options: DownloadOptions): Promise<string[]> {
+  private async downloadVideosWithYtDlp(
+    url: string,
+    options: DownloadOptions,
+    prefix: string,
+  ): Promise<string[]> {
     const formatSpec = this.getFormatSpec('video', options.maxFileSize);
 
     // --ignore-errors: skip image items in carousels (yt-dlp can't handle images)
@@ -484,7 +489,7 @@ export class MediaDownloader {
           '--format',
           formatSpec,
           '--ignore-errors',
-          ...getYtDlpOutputArgs(env.TMP_DIR),
+          ...getYtDlpOutputArgs(env.TMP_DIR, prefix),
           '--no-mtime',
           '--merge-output-format',
           'mp4',
@@ -541,7 +546,11 @@ export class MediaDownloader {
     return filePaths.map((p) => assertSafePath(p, env.TMP_DIR));
   }
 
-  private async downloadWithYtDlp(url: string, options: DownloadOptions): Promise<string[]> {
+  private async downloadWithYtDlp(
+    url: string,
+    options: DownloadOptions,
+    prefix: string,
+  ): Promise<string[]> {
     const formatSpec = this.getFormatSpec(options.format, options.maxFileSize);
     // Write per-video thumbnail to disk for video format so buildMediaItems
     // can read it without an extra HTTP round-trip. Audio/image formats don't
@@ -559,7 +568,7 @@ export class MediaDownloader {
           '--format',
           formatSpec,
           '--no-playlist',
-          ...getYtDlpOutputArgs(env.TMP_DIR),
+          ...getYtDlpOutputArgs(env.TMP_DIR, prefix),
           '--no-mtime',
           ...videoArgs,
           '--quiet',
@@ -586,6 +595,37 @@ export class MediaDownloader {
     if (!filePath) return [];
 
     return [assertSafePath(filePath, env.TMP_DIR)];
+  }
+
+  private async cleanupDownloadRemnants(prefix: string, filePaths: string[]): Promise<void> {
+    const keep = new Set(filePaths.flatMap((path) => [path, path.replace(/\.[^.]+$/, '.jpg')]));
+    const visit = async (dir: string): Promise<void> => {
+      let entries;
+      try {
+        entries = await readdir(dir, { withFileTypes: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          logger.warn('Failed to scan download remnants', { dir, error });
+        }
+        return;
+      }
+      for (const entry of entries) {
+        const path = join(dir, entry.name);
+        // gallery-dl may create site/author subdirectories. Do not follow symlinks.
+        if (entry.isDirectory()) {
+          await visit(path);
+        } else if (entry.name.startsWith(prefix) && !keep.has(path)) {
+          try {
+            await unlink(path);
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+              logger.warn('Failed to remove download remnant', { path, error });
+            }
+          }
+        }
+      }
+    };
+    await visit(env.TMP_DIR);
   }
 
   public async cleanup(filePath: string): Promise<void> {
